@@ -188,6 +188,21 @@ def read_standard_plot_from_db(db_path: Path, measurement_id: str) -> pd.DataFra
     return df
 
 
+def read_nanothickness_from_db(db_path: Path, measurement_id: str) -> pd.DataFrame:
+    conn = open_sqlite(db_path)
+    df = pd.read_sql_query(
+        """
+        SELECT pos1, pos2, pos3, pos4, pos5
+        FROM nanothickness
+        WHERE measurement_id = ? AND is_delete = 0
+        """,
+        conn,
+        params=(measurement_id,),
+    )
+    conn.close()
+    return df
+
+
 def has_cole_cole(db_path: Path, measurement_id: str) -> bool:
     conn = open_sqlite(db_path)
     cur = conn.cursor()
@@ -211,6 +226,35 @@ def has_standard_plot(db_path: Path, measurement_id: str) -> bool:
     conn.close()
     return ok
 
+
+def has_nanothickness(db_path: Path, measurement_id: str) -> bool:
+    conn = open_sqlite(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM nanothickness WHERE measurement_id = ? AND is_delete = 0 LIMIT 1",
+        (measurement_id,),
+    )
+    ok = cur.fetchone() is not None
+    conn.close()
+    return ok
+
+
+def is_measurement_owner(db_path: Path, measurement_id: str, username: str) -> bool:
+    conn = open_sqlite(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT created_by
+        FROM measurements
+        WHERE id = ? AND is_delete = 0
+        """,
+        (measurement_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return False
+    return row[0] == username
 
 def insert_cole_cole(db_path: Path, measurement_id: str, df: pd.DataFrame) -> None:
     conn = open_sqlite(db_path)
@@ -246,6 +290,21 @@ def insert_standard_plot(db_path: Path, measurement_id: str, df: pd.DataFrame) -
             VALUES (?, ?, ?, ?)
             """,
             (str(uuid.uuid4()), measurement_id, float(r["time"]), float(r["voltage"])),
+        )
+    conn.commit()
+    conn.close()
+
+
+def insert_nanothickness(db_path: Path, measurement_id: str, df: pd.DataFrame) -> None:
+    conn = open_sqlite(db_path)
+    cur = conn.cursor()
+    for _, r in df.iterrows():
+        cur.execute(
+            """
+            INSERT INTO nanothickness (id, measurement_id, pos1, pos2, pos3, pos4, pos5)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (str(uuid.uuid4()), measurement_id, float(r["pos1"]), float(r["pos2"]), float(r["pos3"]), float(r["pos4"]), float(r["pos5"])),
         )
     conn.commit()
     conn.close()
@@ -348,6 +407,24 @@ def sync_sqlite_to_server(db_path: Path, measurement_id: str) -> None:
             ON CONFLICT DO NOTHING
             """,
             (str(uuid.uuid4()), measurement_id, r[0], r[1]),
+        )
+    # ---------- Nanothickness ----------
+    s_cur.execute(
+        """
+        SELECT pos1, pos2, pos3, pos4, pos5
+        FROM nanothickness
+        WHERE measurement_id = ? AND is_delete = 0
+        """,
+        (measurement_id,),
+    )
+    for r in s_cur.fetchall():
+        p_cur.execute(
+            """
+            INSERT INTO nanothickness (id, measurement_id, pos1, pos2, pos3, pos4, pos5)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT DO NOTHING
+            """,
+            (str(uuid.uuid4()), measurement_id, r[0], r[1], r[2], r[3], r[4]),
         )
 
     pg_conn.commit()

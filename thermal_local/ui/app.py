@@ -20,9 +20,13 @@ from thermal_local.services.measurements import (
     get_measurement_id,
     has_cole_cole,
     has_standard_plot,
+    has_nanothickness,
+    is_measurement_owner,
     insert_cole_cole,
     insert_standard_plot,
+    insert_nanothickness,
     read_cole_cole_from_db,
+    read_nanothickness_from_db,
     read_standard_plot_from_db,
     soft_delete_measurement,
     sync_db_to_filesystem,
@@ -31,6 +35,7 @@ from thermal_local.services.measurements import (
 from thermal_local.services.sync import (
     read_cole_cole_csv,
     read_standard_plot_csv,
+    read_nanothickness_csv,
     sync_server_to_sqlite,
 )
 
@@ -59,6 +64,9 @@ def _init_session_state() -> None:
         "selected_view": None,
         "selected_device_structure": None,
         "show_all_structures": False,
+        "cole_cole_synced": False,
+        "standard_plot_synced": False,
+        "nanothickness_synced": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -252,9 +260,15 @@ def run() -> None:
 
         base = paths.data_root / "devices" / device_name / measurement_name
         measurement_id = get_measurement_id(paths.db_path, device_name, measurement_name)
+        can_edit = is_measurement_owner(paths.db_path, measurement_id, st.session_state.username)
 
         if view == "cole_cole":
             st.markdown("### Cole–Cole")
+
+            if st.session_state.get("cole_cole_synced"):
+                st.success("Cole–Cole synced")
+                st.session_state.cole_cole_synced = False
+
             cc_files = list(base.glob("CC_*.csv"))
 
             if cc_files:
@@ -262,13 +276,25 @@ def run() -> None:
                 st.dataframe(df)
 
                 if not has_cole_cole(paths.db_path, measurement_id):
-                    if st.button("Add Cole–Cole to DB"):
-                        insert_cole_cole(paths.db_path, measurement_id, df)
-                        sync_sqlite_to_server(paths.db_path, measurement_id)
-                        st.success("Cole–Cole synced")
-                        st.rerun()
+                    if not can_edit:
+                        st.info("Cole–Cole data not in DB. Only the creator of this measurement can add or sync data.")
+                    else:
+                        if st.button("Add Cole–Cole to DB"):
+                            insert_cole_cole(paths.db_path, measurement_id, df)
+                            sync_sqlite_to_server(paths.db_path, measurement_id)
+                            st.session_state.cole_cole_synced = True
+                            st.rerun()
                 else:
-                    st.success("Cole–Cole already in DB")
+                    if not can_edit:
+                        st.info("Cole–Cole data already in DB. Only the creator of this measurement can sync again.")
+                    else:
+                        st.info("Cole-Cole data already in DB, do you want to sync again?")
+                        if st.button("Sync again"):
+                            insert_cole_cole(paths.db_path, measurement_id, df)
+                            sync_sqlite_to_server(paths.db_path, measurement_id)
+                            st.session_state.cole_cole_synced = True
+                            st.rerun()
+                    # st.success("Cole–Cole already in DB")
             else:
                 df = read_cole_cole_from_db(paths.db_path, measurement_id)
                 if not df.empty:
@@ -279,6 +305,11 @@ def run() -> None:
 
         elif view == "standard_plot":
             st.markdown("### Standard Plot")
+
+            if st.session_state.get("standard_plot_synced"):
+                st.success("Standard Plot synced")
+                st.session_state.standard_plot_synced = False
+
             sp_files = list(base.glob("_*.csv"))
 
             if sp_files:
@@ -286,13 +317,24 @@ def run() -> None:
                 st.dataframe(df)
 
                 if not has_standard_plot(paths.db_path, measurement_id):
-                    if st.button("Add Standard Plot to DB"):
-                        insert_standard_plot(paths.db_path, measurement_id, df)
-                        sync_sqlite_to_server(paths.db_path, measurement_id)
-                        st.success("Standard Plot synced")
-                        st.rerun()
+                    if not can_edit:
+                        st.info("Standard Plot data not in DB. Only the creator of this measurement can add or sync data.")
+                    else:
+                        if st.button("Add Standard Plot to DB"):
+                            insert_standard_plot(paths.db_path, measurement_id, df)
+                            sync_sqlite_to_server(paths.db_path, measurement_id)
+                            st.session_state.standard_plot_synced = True
+                            st.rerun()
                 else:
-                    st.success("Standard Plot already in DB")
+                    if not can_edit:
+                        st.info("Standard Plot data already in DB. Only the creator of this measurement can sync again.")
+                    else:
+                        st.info("Standard Plot data already in DB, do you want to sync again?")
+                        if st.button("Sync again"):
+                            insert_standard_plot(paths.db_path, measurement_id, df)
+                            sync_sqlite_to_server(paths.db_path, measurement_id)
+                            st.session_state.standard_plot_synced = True
+                            st.rerun()
             else:
                 df = read_standard_plot_from_db(paths.db_path, measurement_id)
                 if not df.empty:
@@ -303,8 +345,43 @@ def run() -> None:
 
         elif view == "nanothickness":
             st.markdown("### Nanothickness")
-            st.info("Nanothickness not implemented yet")
 
+            if st.session_state.get("nanothickness_synced"):
+                st.success("Nanothickness synced")
+                st.session_state.nanothickness_synced = False
+
+            nano_files = list(base.glob("nn_*.csv"))
+
+            if nano_files:
+                df = read_nanothickness_csv(nano_files[0])
+                st.dataframe(df)
+
+                if not has_nanothickness(paths.db_path, measurement_id):
+                    if not can_edit:
+                        st.info("Nanothickness data not in DB. Only the creator of this measurement can add or sync data.")
+                    else:
+                        if st.button("Add Nanothickness to DB"):
+                            insert_nanothickness(paths.db_path, measurement_id, df)
+                            sync_sqlite_to_server(paths.db_path, measurement_id)
+                            st.session_state.nanothickness_synced = True
+                            st.rerun()
+                else:
+                    if not can_edit:
+                        st.info("Nanothickness data already in DB. Only the creator of this measurement can sync again.")
+                    else:
+                        st.info("Nanothickness data already in DB, do you want to sync again?")
+                        if st.button("Sync again"):
+                            insert_nanothickness(paths.db_path, measurement_id, df)
+                            sync_sqlite_to_server(paths.db_path, measurement_id)
+                            st.session_state.nanothickness_synced = True
+                            st.rerun()
+            else:
+                df = read_nanothickness_from_db(paths.db_path, measurement_id)
+                if not df.empty:
+                    st.info("Loaded from DB (no local CSV)")
+                    st.dataframe(df)
+                else:
+                    st.info("No Nanothickness data available")
     # ================================
     # SIDEBAR
     # ================================

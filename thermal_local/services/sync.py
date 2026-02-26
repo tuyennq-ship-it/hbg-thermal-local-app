@@ -114,6 +114,23 @@ def sync_server_to_sqlite(sqlite_path: Path) -> None:
         [tuple(_normalize_value(v) for v in r) for r in pg_cur.fetchall()],
     )
 
+    # =========================
+    # NANOTHICKNESS
+    # =========================
+    pg_cur.execute("""
+        SELECT id, measurement_id, pos1, pos2, pos3, pos4, pos5, is_delete
+        FROM nanothickness
+    """)
+    sqlite_cur.executemany(
+        """
+        INSERT INTO nanothickness (
+            id, measurement_id, pos1, pos2, pos3, pos4, pos5, is_delete
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [tuple(_normalize_value(v) for v in r) for r in pg_cur.fetchall()],
+    )
+
     sqlite_conn.commit()
 
     sqlite_cur.close()
@@ -138,4 +155,13 @@ def read_standard_plot_csv(path: Path) -> pd.DataFrame:
     if not required.issubset(set(df.columns)):
         raise ValueError(f"Standard plot CSV missing columns: {required - set(df.columns)}")
     return df[["time", "voltage"]]
+
+
+def read_nanothickness_csv(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df.columns = [c.strip().lower() for c in df.columns]
+    required = {"pos1", "pos2", "pos3", "pos4", "pos5"}
+    if not required.issubset(set(df.columns)):
+        raise ValueError(f"Nanothickness CSV missing columns: {required - set(df.columns)}")
+    return df[["pos1", "pos2", "pos3", "pos4", "pos5"]]
 
