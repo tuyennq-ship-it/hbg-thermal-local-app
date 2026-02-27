@@ -30,6 +30,7 @@ from thermal_local.services.measurements import (
     read_standard_plot_from_db,
     soft_delete_measurement,
     sync_db_to_filesystem,
+    sync_measurement_to_server,
     sync_sqlite_to_server,
 )
 from thermal_local.services.sync import (
@@ -63,7 +64,7 @@ def _init_session_state() -> None:
         "selected_measurement": None,
         "selected_view": None,
         "selected_device_structure": None,
-        "show_all_structures": False,
+        "show_all_structures": True,
         "cole_cole_synced": False,
         "standard_plot_synced": False,
         "nanothickness_synced": False,
@@ -136,48 +137,62 @@ def run() -> None:
     # LOGIN
     # ================================
     if not st.session_state.logged_in:
-        st.subheader("🔐 Login")
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
 
-        if st.button("Login"):
-            if not username or not password:
-                st.error("Username and password are required")
-                return
+        col_left, col_center, col_right = st.columns([1, 1, 1])
 
-            import sqlite3
+        with col_center:
+            # with st.container():
+            #     st.markdown(
+            #         """
+            #         <div style="
+            #             background-color: #f9f9f9;
+            #             padding: 30px;
+            #             border-radius: 12px;
+            #             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            #         ">
+            #         """,
+            #         unsafe_allow_html=True,
+            #     )
+                st.markdown("## 🔐 Login")
 
-            conn = sqlite3.connect(paths.db_path)
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT username, active, hashed_password
-                FROM users
-                WHERE username = ?
-                """,
-                (username,),
-            )
-            row = cur.fetchone()
-            conn.close()
+                username = st.text_input("Username")
+                password = st.text_input("Password", type="password")
 
-            if not row:
-                st.error("❌ User not found")
-            elif not row[1]:
-                st.error("🚫 User is inactive")
-            else:
-                db_username, active, db_hashed_password = row
-                if not Hasher.verify_password(password, db_hashed_password):
-                    st.error("❌ Invalid password")
-                else:
-                    st.session_state.logged_in = True
-                    st.session_state.username = db_username
-                    try:
-                        sync_server_to_sqlite(paths.db_path)
-                    except Exception as e:
-                        st.warning(f"Could not sync from server: {e}. Using local data.")
-                    sync_db_to_filesystem(ctx)
-                    st.success(f"Logged in as {db_username}")
-                    st.rerun()
+                if st.button("Login", use_container_width=True):
+                    if not username or not password:
+                        st.error("Username and password are required")
+                    else:
+                        import sqlite3
+                        conn = sqlite3.connect(paths.db_path)
+                        cur = conn.cursor()
+                        cur.execute(
+                            """
+                            SELECT username, active, hashed_password
+                            FROM users
+                            WHERE username = ?
+                            """,
+                            (username,),
+                        )
+                        row = cur.fetchone()
+                        conn.close()
+
+                        if not row:
+                            st.error("❌ User not found")
+                        elif not row[1]:
+                            st.error("🚫 User is inactive")
+                        else:
+                            db_username, active, db_hashed_password = row
+                            if not Hasher.verify_password(password, db_hashed_password):
+                                st.error("❌ Invalid password")
+                            else:
+                                st.session_state.logged_in = True
+                                st.session_state.username = db_username
+                                sync_server_to_sqlite(paths.db_path)
+                                sync_db_to_filesystem(ctx)
+                                st.success(f"Logged in as {db_username}")
+                                st.rerun()
+
+                st.markdown("</div>", unsafe_allow_html=True)
 
         st.stop()
 
@@ -263,16 +278,50 @@ def run() -> None:
         can_edit = is_measurement_owner(paths.db_path, measurement_id, st.session_state.username)
 
         if view == "cole_cole":
-            st.markdown("### Cole–Cole")
+            col_h, col_r = st.columns([8, 2])
+            with col_h:
+                st.markdown("### Cole–Cole")
+            with col_r:
+                if st.button("Refresh", key=f"refresh_cc_{measurement_id}", use_container_width=True):
+                    st.rerun()
 
             if st.session_state.get("cole_cole_synced"):
                 st.success("Cole–Cole synced")
                 st.session_state.cole_cole_synced = False
 
-            cc_files = list(base.glob("CC_*.csv"))
+            uploaded_cc = st.file_uploader(
+                "Browse Cole–Cole CSV",
+                type=["csv"],
+                key=f"upload_cc_{measurement_id}",
+            )
 
-            if cc_files:
-                df = read_cole_cole_csv(cc_files[0])
+            cc_files = list(base.glob("CC_*.csv"))
+            df = None
+
+            if uploaded_cc is not None:
+                try:
+                    df = read_cole_cole_csv(uploaded_cc)
+                    st.info("Loaded Cole–Cole data from uploaded CSV.")
+                except ValueError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Error reading uploaded Cole–Cole CSV: {e}")
+            elif cc_files:
+                try:
+                    df = read_cole_cole_csv(cc_files[0])
+                    st.info(f"Loaded Cole–Cole data from local CSV: {cc_files[0].name}")
+                except ValueError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Error reading Cole–Cole CSV: {e}")
+            else:
+                df = read_cole_cole_from_db(paths.db_path, measurement_id)
+                if not df.empty:
+                    st.info("Loaded Cole–Cole data from DB (no local CSV).")
+                else:
+                    st.info("No Cole–Cole data available. Add a CSV to the folder or use Browse, then click Refresh.")
+
+            if df is not None and not df.empty:
                 st.dataframe(df)
 
                 if not has_cole_cole(paths.db_path, measurement_id):
@@ -288,32 +337,58 @@ def run() -> None:
                     if not can_edit:
                         st.info("Cole–Cole data already in DB. Only the creator of this measurement can sync again.")
                     else:
-                        st.info("Cole-Cole data already in DB, do you want to sync again?")
+                        st.info("Cole–Cole data already in DB, do you want to sync again?")
                         if st.button("Sync again"):
                             insert_cole_cole(paths.db_path, measurement_id, df)
                             sync_sqlite_to_server(paths.db_path, measurement_id)
                             st.session_state.cole_cole_synced = True
                             st.rerun()
-                    # st.success("Cole–Cole already in DB")
-            else:
-                df = read_cole_cole_from_db(paths.db_path, measurement_id)
-                if not df.empty:
-                    st.info("Loaded from DB (no local CSV)")
-                    st.dataframe(df)
-                else:
-                    st.info("No Cole–Cole data available")
 
         elif view == "standard_plot":
-            st.markdown("### Standard Plot")
+            col_h, col_r = st.columns([8, 2])
+            with col_h:
+                st.markdown("### Standard Plot")
+            with col_r:
+                if st.button("Refresh", key=f"refresh_sp_{measurement_id}", use_container_width=True):
+                    st.rerun()
 
             if st.session_state.get("standard_plot_synced"):
                 st.success("Standard Plot synced")
                 st.session_state.standard_plot_synced = False
 
-            sp_files = list(base.glob("_*.csv"))
+            uploaded_sp = st.file_uploader(
+                "Browse Standard Plot CSV",
+                type=["csv"],
+                key=f"upload_sp_{measurement_id}",
+            )
 
-            if sp_files:
-                df = read_standard_plot_csv(sp_files[0])
+            sp_files = list(base.glob("_*.csv"))
+            df = None
+
+            if uploaded_sp is not None:
+                try:
+                    df = read_standard_plot_csv(uploaded_sp)
+                    st.info("Loaded Standard Plot data from uploaded CSV.")
+                except ValueError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Error reading uploaded Standard Plot CSV: {e}")
+            elif sp_files:
+                try:
+                    df = read_standard_plot_csv(sp_files[0])
+                    st.info(f"Loaded Standard Plot data from local CSV: {sp_files[0].name}")
+                except ValueError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Error reading Standard Plot CSV: {e}")
+            else:
+                df = read_standard_plot_from_db(paths.db_path, measurement_id)
+                if not df.empty:
+                    st.info("Loaded Standard Plot data from DB (no local CSV).")
+                else:
+                    st.info("No Standard Plot data available. Add a CSV to the folder or use Browse, then click Refresh.")
+
+            if df is not None and not df.empty:
                 st.dataframe(df)
 
                 if not has_standard_plot(paths.db_path, measurement_id):
@@ -335,25 +410,52 @@ def run() -> None:
                             sync_sqlite_to_server(paths.db_path, measurement_id)
                             st.session_state.standard_plot_synced = True
                             st.rerun()
-            else:
-                df = read_standard_plot_from_db(paths.db_path, measurement_id)
-                if not df.empty:
-                    st.info("Loaded from DB (no local CSV)")
-                    st.dataframe(df)
-                else:
-                    st.info("No Standard Plot data available")
 
         elif view == "nanothickness":
-            st.markdown("### Nanothickness")
+            col_h, col_r = st.columns([8, 2])
+            with col_h:
+                st.markdown("### Nanothickness")
+            with col_r:
+                if st.button("Refresh", key=f"refresh_nano_{measurement_id}", use_container_width=True):
+                    st.rerun()
 
             if st.session_state.get("nanothickness_synced"):
                 st.success("Nanothickness synced")
                 st.session_state.nanothickness_synced = False
 
-            nano_files = list(base.glob("nn_*.csv"))
+            uploaded_nano = st.file_uploader(
+                "Browse Nanothickness CSV",
+                type=["csv"],
+                key=f"upload_nano_{measurement_id}",
+            )
 
-            if nano_files:
-                df = read_nanothickness_csv(nano_files[0])
+            nano_files = list(base.glob("nn_*.csv"))
+            df = None
+
+            if uploaded_nano is not None:
+                try:
+                    df = read_nanothickness_csv(uploaded_nano)
+                    st.info("Loaded Nanothickness data from uploaded CSV.")
+                except ValueError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Error reading uploaded Nanothickness CSV: {e}")
+            elif nano_files:
+                try:
+                    df = read_nanothickness_csv(nano_files[0])
+                    st.info(f"Loaded Nanothickness data from local CSV: {nano_files[0].name}")
+                except ValueError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Error reading Nanothickness CSV: {e}")
+            else:
+                df = read_nanothickness_from_db(paths.db_path, measurement_id)
+                if not df.empty:
+                    st.info("Loaded Nanothickness data from DB (no local CSV).")
+                else:
+                    st.info("No Nanothickness data available. Add a CSV to the folder or use Browse, then click Refresh.")
+
+            if df is not None and not df.empty:
                 st.dataframe(df)
 
                 if not has_nanothickness(paths.db_path, measurement_id):
@@ -375,13 +477,6 @@ def run() -> None:
                             sync_sqlite_to_server(paths.db_path, measurement_id)
                             st.session_state.nanothickness_synced = True
                             st.rerun()
-            else:
-                df = read_nanothickness_from_db(paths.db_path, measurement_id)
-                if not df.empty:
-                    st.info("Loaded from DB (no local CSV)")
-                    st.dataframe(df)
-                else:
-                    st.info("No Nanothickness data available")
     # ================================
     # SIDEBAR
     # ================================
@@ -412,6 +507,14 @@ def run() -> None:
 
             for m in measurements:
                 with st.expander(f"📁 {m}"):
+                    measurement_folder = paths.data_root / "devices" / device_name / m
+                    if st.button(
+                        "📂 Open in Folder",
+                        key=f"open_measurement_folder_{device_name}_{m}",
+                        use_container_width=True,
+                    ):
+                        _open_folder(measurement_folder)
+
                     if st.button("Cole–Cole", key=f"cc_{device_name}_{m}", use_container_width=True):
                         st.session_state.selected_device_structure = device_name
                         st.session_state.selected_measurement = (device_name, m)
@@ -455,9 +558,6 @@ def run() -> None:
                 if st.button("➕ New Measurement", key=f"new_{device_name}", use_container_width=True):
                     st.session_state.creating_measurement_for = device_name
                     st.rerun()
-
-                if st.button("📂 Open in Folder", key=f"open_folder_{device_name}", use_container_width=True):
-                    _open_folder(device_folder)
             else:
                 name = st.text_input("Measurement name", key=f"name_{device_name}")
                 col1, col2 = st.columns(2)
@@ -474,6 +574,9 @@ def run() -> None:
                                     measurement_name=name,
                                     created_by=st.session_state.username,
                                 )
+                                # Immediately sync the new measurement to server
+                                m_id = get_measurement_id(paths.db_path, device_name, name)
+                                sync_measurement_to_server(paths.db_path, m_id)
                                 st.session_state.creating_measurement_for = None
                                 st.rerun()
                             except ValueError as e:
